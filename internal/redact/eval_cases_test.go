@@ -137,6 +137,163 @@ var evalCases = []evalCase{
 		Keep: []evalValue{{V: "函数", Kind: "PERSON"}, {V: "错误处理", Kind: "PERSON"}},
 	},
 
+	{
+		ID: "ci-table", From: "611b9e173",
+		Text: "| run | file | result |\n| 6123456789 | ci.yml | success |",
+		Keep: []evalValue{{V: "6123456789", Kind: "ACCOUNT"}, {V: "ci.yml", Kind: "PERSON"}},
+	},
+	{
+		ID: "git-log", From: "d3db461bb",
+		Text: "ba319a758 gateway: the lone tool_choice none goes to the Grok plugin only (#3110)\nUpdate to v0.1.1442 now",
+		Keep: []evalValue{{V: "ba319a758", Kind: "ACCOUNT"}, {V: "v0.1.1442", Kind: "ACCOUNT"}},
+	},
+	{
+		ID: "pixels", From: "d3db461bb",
+		Text: "Attached a screenshot of 1624x1487 pixels, 2048000 bytes.",
+		Keep: []evalValue{{V: "1624x1487", Kind: "ACCOUNT"}, {V: "2048000", Kind: "PHONE"}},
+	},
+	{
+		ID: "assistant-prose", From: "d3db461bb",
+		Text: "Thanks Claude, that fixed it. Also ask Gemini later. — Sam Lee\nHi Codex, please review. Opus said it looks good, Sonnet disagreed.",
+		Mask: []evalValue{{V: "Sam Lee", Kind: "PERSON"}},
+		Keep: []evalValue{{V: "Claude", Kind: "PERSON"}, {V: "Codex", Kind: "PERSON"}, {V: "Opus", Kind: "PERSON"}, {V: "Sonnet", Kind: "PERSON"}},
+	},
+	{
+		ID: "commit-login", From: "d3db461bb",
+		Text: "commit 919585d1700e515ac38da49e31bc60a527fc15c2\nAuthor: yetone <yetone@users.noreply.github.com>",
+		Keep: []evalValue{{V: "yetone", Kind: "PERSON"}, {V: "919585d1700e515ac38da49e31bc60a527fc15c2", Kind: "SECRET"}},
+	},
+	{
+		ID: "session-tokens", From: "d3db461bb",
+		Text: "session 019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b token 019a2b3c4d5e7f608a9b0c1d2e3f4a5b",
+		Keep: []evalValue{{V: "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b", Kind: "SECRET"}},
+	},
+	{
+		ID: "user-path", From: "d3db461bb",
+		Text: "read /Users/yetone/workspace/projects/magpie/AGENTS.md and C:\\Users\\vdxz\\notes.txt, then /home/rina/.config/app.toml",
+		Keep: []evalValue{{V: "yetone", Kind: "PERSON"}, {V: "AGENTS.md", Kind: "PERSON"}, {V: "vdxz", Kind: "PERSON"}, {V: "rina", Kind: "PERSON"}},
+	},
+	{
+		ID: "skill-list", From: "d3db461bb",
+		Text: "- artifact-design: Design guidance\n- workflow-authoring: Reference for writing scripts\nUser yetone logged in; local LLM ready\nReviewer: Approved",
+		Keep: []evalValue{{V: "artifact-design", Kind: "PERSON"}, {V: "workflow-authoring", Kind: "PERSON"}, {V: "yetone", Kind: "PERSON"}, {V: "Reviewer: Approved", Kind: "PERSON"}},
+	},
+	{
+		ID: "one-letter", From: "true",
+		Text: "J said the build is fine; K and Q disagreed.",
+		Keep: []evalValue{{V: "J", Kind: "PERSON"}, {V: "K", Kind: "PERSON"}},
+	},
+	{
+		ID: "tool-use-ids", From: "d3db461bb",
+		Text: `{"type":"tool_result","tool_use_id":"toolu_01XyZabcDEF123456","id":"srvtoolu_01AbCdEfGhIjKlMnOp","call":"call_Qm7vT2xLk9RbW4nZ"}`,
+		Keep: []evalValue{{V: "toolu_01XyZabcDEF123456", Kind: "SECRET"}, {V: "srvtoolu_01AbCdEfGhIjKlMnOp", Kind: "SECRET"}, {V: "call_Qm7vT2xLk9RbW4nZ", Kind: "ACCOUNT"}},
+	},
+	{
+		ID: "task-ids", From: "d3db461bb",
+		Text: "<task-id>a97c9bc67cc1f1e27</task-id> wrote 31a4f944-e7cf-4f6f-acc7-eef50d9911dd.jsonl",
+		Keep: []evalValue{{V: "a97c9bc67cc1f1e27", Kind: "SECRET"}, {V: "31a4f944-e7cf-4f6f-acc7-eef50d9911dd", Kind: "SECRET"}},
+	},
+	{
+		ID: "hex-lines", From: "d3db461bb",
+		Text: "hex40 ok? 1 2f1d0c9b8a7e6f5d4c3b2a1908f7e6d5c4b3a291\n919585d1700e515ac38da49e31bc60a527fc15c2 ok? 1",
+		Keep: []evalValue{{V: "2f1d0c9b8a7e6f5d4c3b2a1908f7e6d5c4b3a291", Kind: "SECRET", Known: "#3597"}, {V: "919585d1700e515ac38da49e31bc60a527fc15c2", Kind: "SECRET"}},
+	},
+	{
+		ID: "go-caches", From: "d3db461bb",
+		Text: "open /Users/x/Library/Caches/go-build/63700b7ab65fd1d3@v63: no such file\nP=/Users/yetone/.npm/_npx/1e7f6d9597241db0 d6426ecaaf0a28de@v31",
+		Keep: []evalValue{{V: "63700b7ab65fd1d3@v63", Kind: "EMAIL"}, {V: "d6426ecaaf0a28de@v31", Kind: "EMAIL"}, {V: "1e7f6d9597241db0", Kind: "SECRET"}},
+	},
+	{
+		ID: "base64-image", From: "d3db461bb",
+		Text: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA+k5zM7Md7tM9ehxd51xF/isvM9",
+		Keep: []evalValue{{V: "k5zM7Md7tM9ehxd51xF", Kind: "SECRET"}, {V: "isvM9", Kind: "SECRET"}},
+	},
+	{
+		ID: "grep-alts", From: "d3db461bb",
+		Text: "rg 'modelTakes|modelFits|personFits' internal; join at discord.gg/Ab3dEf9h today",
+		Keep: []evalValue{{V: "modelTakes|modelFits|personFits", Kind: "SECRET"}, {V: "discord.gg/Ab3dEf9h", Kind: "SECRET"}},
+	},
+	{
+		ID: "json-settings", From: "d3db461bb",
+		Text: `settings: {"mode": "fast", "retries": "3", "theme": "dark"}`,
+		Keep: []evalValue{{V: `"mode": "fast"`, Kind: "SECRET"}, {V: `"retries": "3"`, Kind: "SECRET"}},
+	},
+	{
+		ID: "event-times", From: "#3577",
+		Text: `{"event": "tool_call", "timestamp": 1792903687, "ms": 1792903687123, "at": "2026-10-25T04:48:03.755Z", "desk": "+1 415 555 0132", "ext": "4821"}`,
+		Mask: []evalValue{{V: "415 555 0132", Kind: "PHONE"}},
+		Keep: []evalValue{{V: "1792903687", Kind: "PHONE"}, {V: "4821", Kind: "PHONE"}},
+	},
+	{
+		ID: "codex-meta", From: "#3144",
+		Text: `{"stream_options":{"reasoning_summary_delivery":"sequential_cutoff"},"session_id":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","text":"set sequential_cutoff for Rina Kowalczyk, skill at /Users/vdxz/.codex/skills/wrangler/SKILL.md, my password is Tr0ub4dor&3xq"}`,
+		Mask: []evalValue{{V: "Rina Kowalczyk", Kind: "PERSON"}, {V: "Tr0ub4dor&3xq", Kind: "SECRET"}},
+		Keep: []evalValue{{V: "sequential_cutoff", Kind: "PERSON"}, {V: "reasoning_summary_delivery", Kind: "PERSON"}, {V: "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b", Kind: "SECRET"}, {V: "vdxz", Kind: "PERSON"}},
+	},
+	{
+		ID: "short-values", From: "true",
+		Text: "office: Unit 5, postcode 94107",
+		Keep: []evalValue{{V: "94107", Kind: "ADDRESS"}},
+	},
+	{
+		ID: "url-login", From: "#3538",
+		Text: "git clone https://deploy-bot@git.acme-corp.cn/team/app.git and ssh ops@10.0.0.7",
+		Keep: []evalValue{{V: "deploy-bot@git.acme-corp.cn", Kind: "EMAIL"}},
+	},
+	{
+		ID: "zh-names-edge", From: "true",
+		Text: "这个问题请找王小明先生处理，抄送给李华老师。",
+		Mask: []evalValue{{V: "王小明", Kind: "PERSON"}, {V: "李华", Kind: "PERSON"}},
+		Keep: []evalValue{{V: "先生", Kind: "PERSON"}, {V: "老师", Kind: "PERSON"}},
+	},
+	// from Claude Code sessions, after a reporter found most of the
+	// model's finds wrong (10-26); the shapes are theirs, the values made up
+	{
+		ID: "metric-decimals", From: "x-tearicerice",
+		Text: "2026-10-21T08:10:00Z 2984.517203648091\n2026-10-21T08:20:00Z 1.0833333333333333\n2026-10-21T08:30:00Z 101.47368421052631",
+		Keep: []evalValue{{V: "2984.517203648091", Kind: "PHONE"}, {V: "1.0833333333333333", Kind: "PHONE"}, {V: "101.47368421052631", Kind: "PHONE"}},
+	},
+	{
+		ID: "run-ids", From: "x-tearicerice",
+		Text: "Someone ran Deploy by hand ([run 48213097715](https://github.com/acme/web/actions/runs/48213097715)).\n$ env -u GH_TOKEN -u GITHUB_TOKEN gh run view 48213097716 --log | tail\n15:17:29Z fleet run 48213097716",
+		Keep: []evalValue{{V: "run 48213097715", Kind: "PHONE"}, {V: "48213097716", Kind: "SECRET"}},
+	},
+	{
+		ID: "background-tasks", From: "x-tearicerice",
+		Text: "Command running in background with ID: kq3m8zx2t. Output is being written to: /private/tmp/claude-501/tasks/kq3m8zx2t.output\nThe command ran past its timeout and was moved to the background (ID: bv7n2wq5p).\n<task-notification>\n<task-id>kq3m8zx2t</task-id>",
+		Keep: []evalValue{{V: "kq3m8zx2t", Kind: "SECRET"}, {V: "bv7n2wq5p", Kind: "SECRET"}},
+	},
+	{
+		ID: "model-names", From: "x-tearicerice",
+		Text: "{'api_provider': 'openai', 'status': '404', 'litellm_model_name': 'qwen/qwen3-30b-a3b-instruct-2507'} 2.1\n{'api_provider': 'None', 'litellm_model_name': 'qwen/qwen3-vl-32b-instruct'} 1.0\n$ grep -n 'qwen3-max\\b\\|qwen/qwen3-14b' usage.log",
+		Keep: []evalValue{{V: "qwen/qwen3-30b-a3b-instruct-2507", Kind: "SECRET"}, {V: "qwen/qwen3-vl-32b-instruct", Kind: "SECRET"}, {V: `qwen3-max\b\|qwen/qwen3-14b`, Kind: "SECRET"}},
+	},
+	{
+		ID: "ls-files", From: "x-tearicerice",
+		Text: "-rwxr-xr-x@  1 sam  staff   690 Aug 20 19:58 make-icons.sh\n-rw-r--r--@  1 sam  staff  1204 Aug 21 09:02 notes-old.md",
+		Keep: []evalValue{{V: "make-icons.sh", Kind: "SECRET"}, {V: "notes-old.md", Kind: "SECRET"}},
+	},
+	{
+		ID: "gateway-ids", From: "x-tearicerice",
+		Text: `{"stream":true,"gatewayRequestId":"req_gateway_7c41e09a5bd2f3687e1a90c4","ledgerId":"gl_Wq7rTb2xNe5YpLaZ"}` + "\n- tb_Ra4Kp9Lm-ZqT2wXy_8Hs, $1.61: release about 17:05Z",
+		Keep: []evalValue{{V: "req_gateway_7c41e09a5bd2f3687e1a90c4", Kind: "SECRET"}, {V: "gl_Wq7rTb2xNe5YpLaZ", Kind: "SECRET"}, {V: "tb_Ra4Kp9Lm-ZqT2wXy_8Hs", Kind: "SECRET"}, {V: "release about 17:05Z", Kind: "SECRET"}},
+	},
+	{
+		ID: "transcript-path", From: "x-tearicerice",
+		Text: "read the full transcript at: /Users/sam/.claude/projects/-Users-sam-work-acme-web/5c0d2e1f-7a4b-4c3d-9e8f-0a1b2c3d4e5f.jsonl\nContinue the conversation",
+		Keep: []evalValue{{V: "Users-sam-work-acme-web/5c0d2e1f-7a4b-4c3d-9e8f-0a1b2c3d4e5f.jsonl", Kind: "ADDRESS"}},
+	},
+	{
+		ID: "pr-checks", From: "x-tearicerice",
+		Text: "CodeRabbit\tpending\t0\t\tReview in progress\nGreptile Review\tpending\t0\thttps://app.greptile.com/review/3860\nCI\tpass\t4m12s\n" + `{"region":"us-east-1","edge":"eu.stg.acme.io","monitored":false}`,
+		Keep: []evalValue{{V: "CodeRabbit", Kind: "PERSON"}, {V: "Greptile", Kind: "PERSON"}, {V: "CI", Kind: "PERSON"}, {V: "eu.stg.acme.io", Kind: "EMAIL"}},
+	},
+	{
+		ID: "team-notes", From: "x-tearicerice",
+		Text: "The 14:55Z errors came from our own org; Dana Whitfield is the lead if this turns out to be a settlement failure, and Priya wants it fixed first.",
+		Mask: []evalValue{{V: "Dana Whitfield", Kind: "PERSON"}, {V: "Priya", Kind: "PERSON"}},
+	},
+
 	// ---- what masking is for --------------------------------------------
 	{
 		ID: "prose-person", From: "true",
