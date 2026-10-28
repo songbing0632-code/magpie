@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/agent"
+	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/sessions"
 	"github.com/yetone/magpie/internal/settings"
@@ -106,6 +107,10 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 		nativeKeys := map[string]bool{}
 		for _, s := range list {
 			nativeKeys[s.Agent+"|"+s.ID] = true
+			// a copy of its conversation is the agent's own too
+			for _, id := range s.Copies {
+				nativeKeys[s.Agent+"|"+id] = true
+			}
 		}
 		gateway := listedGateway(usage.GatewaySessions(time.Time{}, nativeKeys))
 		ext := make([]sessions.ExternalSession, 0, len(gateway))
@@ -535,10 +540,18 @@ func combinedSessionStats(days int) sessions.Stats {
 // page opens on the kept index and not on a first read of them all. Usage ›
 // Requests' whole history is read after it, not beside it on the disk: a
 // first All parsing 12k sessions kept that page a skeleton for 40 s.
+// Once a process: the app's page served to a browser (apppage.go) is a
+// second Handler beside the window's.
 func warmSessions() {
 	if testing.Testing() {
 		return
 	}
+	warmOnce.Do(warmStart)
+}
+
+var warmOnce sync.Once
+
+func warmStart() {
 	go func() {
 		time.Sleep(3 * time.Second)
 		// with few readers, as nobody waits on it yet: after an update
@@ -574,6 +587,10 @@ var warmCodexEffort = func() { usage.CodexModelEffort(usage.All) }
 // the next minutes: a magpie that had just started read ~470 MB for its
 // first two minutes at rest.
 func warmUp(steps ...func()) {
+	// each file read looked at once a second, not for each session or row
+	// that asks: an empty sandbox's warm-up looked at settings.json ~300
+	// times on Windows (#1665); a write still reads the disk (edit.Read)
+	defer filememo.Hold()()
 	for _, step := range steps {
 		step()
 	}

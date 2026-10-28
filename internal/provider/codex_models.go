@@ -60,6 +60,52 @@ func codexModels(ctx context.Context, sign func(context.Context, *http.Request, 
 	return ms, nil
 }
 
+// CodexLiveList is the ChatGPT backend's model list for the account Codex
+// is signed in to now, as the backend sends it: its entries, their
+// base_instructions among them, untouched. magpie writes it for the Codex
+// app beside the sign-in (agent.CodexDesktopList), whose picker shows only
+// the models a flag of OpenAI's names unless Codex reads its list from a
+// file. An error when Codex is not signed in to ChatGPT, the backend
+// doesn't answer 200, or its answer lists no model: never an empty list.
+func CodexLiveList(ctx context.Context) ([]byte, error) {
+	home, _ := os.UserHomeDir()
+	p, ok := codexAccount(home)
+	if !ok || p.Account == nil || p.Account.sign == nil {
+		return nil, errors.New("Codex is not signed in to ChatGPT")
+	}
+	ctx = ViaSignedIn(ctx, "codex")
+	u := CodexBase + "/models?client_version=" + url.QueryEscape(codexVersion())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.Account.sign(ctx, req, nil); err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("ChatGPT models: %s", resp.Status)
+	}
+	var list struct {
+		Models []json.RawMessage `json:"models"`
+	}
+	if err := json.Unmarshal(b, &list); err != nil {
+		return nil, fmt.Errorf("ChatGPT models: %w", err)
+	}
+	if len(list.Models) == 0 {
+		return nil, errors.New("ChatGPT listed no Codex models")
+	}
+	return b, nil
+}
+
 var codexVersionCache struct {
 	sync.Mutex
 	v  string
@@ -428,34 +474,12 @@ func CodexNativeHidden() map[string]bool {
 	}
 	off := ModelOff("codex")
 	out := map[string]bool{}
-	for _, e := range Catalog() {
+	for _, e := range catalogOf("codex") {
 		if CodexOwn(e) && off(e.ID) {
 			out[e.Model] = true
 		}
 	}
 	return out
-}
-
-// CodexNativeUnlisted is the ChatGPT account's own models kept out of the
-// lists agents see, which the backend lists to Codex all the same: every
-// one (all) when the codex provider serves only through routing groups
-// (Provider.Unlisted), and by slug those a routing group keeps out of the
-// lists (Group.Unlists). The gateway drops them from its /models answer as
-// it does the ones hidden; Codex then reaches them only through its groups
-// (#1602). A provider switched off keeps none out: it serves nothing, and
-// its setting is kept for when it is switched on again.
-func CodexNativeUnlisted() (all bool, slugs map[string]bool) {
-	p, ok := find(All(), "codex")
-	all = ok && !p.Off && p.Unlisted
-	for _, e := range Unlisted() {
-		if CodexOwn(e) {
-			if slugs == nil {
-				slugs = map[string]bool{}
-			}
-			slugs[e.Model] = true
-		}
-	}
-	return all, slugs
 }
 
 // CodexOrder is where each model of Codex's list goes when the user put
@@ -473,7 +497,7 @@ func CodexOrder() (map[string]int, bool) {
 		at[id] = i
 	}
 	out := map[string]int{}
-	for _, e := range Catalog() {
+	for _, e := range catalogOf("codex") {
 		i, ok := at[e.ID]
 		if !ok {
 			continue
@@ -516,14 +540,6 @@ func buildCodexListTag(kind string) string {
 		for _, slug := range slices.Sorted(maps.Keys(keep)) {
 			ms = append(ms, catalog.Model{ID: "~picked:" + slug})
 		}
-	}
-	// and those kept out of the lists for routing groups (#1602)
-	all, unlisted := CodexNativeUnlisted()
-	if all {
-		ms = append(ms, catalog.Model{ID: "~unlisted"})
-	}
-	for _, slug := range slices.Sorted(maps.Keys(unlisted)) {
-		ms = append(ms, catalog.Model{ID: "~unlisted:" + slug})
 	}
 	// and the models the user disabled (#1867)
 	for _, pat := range DisabledModels() {
