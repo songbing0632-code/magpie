@@ -153,6 +153,8 @@ const usage = `magpie — one place to pick every agent's model
   magpie statusline [<provider|account>]   one line for Claude Code's status line: the session's model and each account's windows
   magpie sync                     refresh the model catalog and vendor model lists
   magpie agents                   list every supported agent
+  magpie settings [list|get <key>|set <key> <value>|reset <key>] [--json]
+                                  every setting the window's Settings page saves, read and set as it saves them (magpie settings help)
   magpie update [check] [--proxy <url>] [--mirror <prefix>]
                                   install the newest release (check: only say if there is one); --proxy: an
                                   http(s):// or socks5:// proxy for it; --mirror: a GitHub download mirror put
@@ -335,6 +337,12 @@ func run(args []string) error {
 		case "mcp":
 			if len(args) > 1 && args[1] == "browser" {
 				return browsermcp.Run(args[2:])
+			}
+			if len(args) > 1 && args[1] == "search" {
+				return browsermcp.RunSearch(args[2:])
+			}
+			if len(args) > 1 && args[1] == "vision" {
+				return browsermcp.RunVision(args[2:])
 			}
 			return imagemcp.Run(args[1:])
 		case "claude-mcp-helper": // internal: stdio MCP subprocess spawned by Claude Code
@@ -533,6 +541,8 @@ func run(args []string) error {
 		return githubCmd(args[1:])
 	case "claude-code":
 		return claudeCodeCmd(args[1:])
+	case "settings":
+		return settingsCmd(args[1:])
 	}
 
 	// the agent of a plugin that is gone (deleted on disk) is no agent
