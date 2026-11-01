@@ -43,6 +43,10 @@ type candidate struct {
 	// effort is the reasoning the group's member it is of is fixed at
 	// ("provider/model:low"); "" for one that follows the agent or the group
 	effort string
+	// levels are the reasoning levels the member follows the agent among
+	// (Member.Levels, "provider/model:low+high"): what the agent asks is
+	// sent at the nearest of them. nil for one fixed or following the group.
+	levels []string
 	// fast is set on a member the group sends in its vendor's fast mode
 	// (Group.Fast); ultra on an agent's fast pick sent Ultrafast (#1954)
 	fast, ultra bool
@@ -68,6 +72,18 @@ type candidate struct {
 	// members' busy failures, the group asked for only those that set none;
 	// 0 falls back to the asked group's Waits, PatienceOff skips replan
 	patience int
+	// member is the member of the group asked for it is of, as the group
+	// spells it (Member.Path[0]): a group in the group is one member.
+	// place is that member's place in the group's list, 1 for its first,
+	// 0 for one not of a group (planGroup): what the user put first is
+	// what a member listed after it stands in for (standsInFor)
+	member string
+	place  int
+	// reserve is set, to the provider's AtOnce, on an account or key held
+	// back past the first that many (keepAtOnce): tried after them, never
+	// given a request for want of a slot (laneMate) nor kept on by a
+	// conversation (affine)
+	reserve int
 }
 
 // capHold is how an account is held at its usage cap: the cap of the
@@ -112,7 +128,7 @@ func (c candidate) restKey() string {
 // seat is the candidate as one of a group's members has it: its key or
 // account, the model, and the effort the member is fixed at.
 func (c candidate) seat() string {
-	return provider.WithMemberEffort(c.rest+"/"+c.model, c.effort)
+	return provider.WithMemberEffort(c.rest+"/"+c.model, cmp.Or(c.effort, strings.Join(c.levels, "+")))
 }
 
 func (c candidate) isOpenRouterFree() bool {
@@ -219,6 +235,71 @@ func perKeyOf(p provider.Provider, model string, from provider.Protocol) (out, a
 // serve the model (provider.AccountModels, #474): never tried, whatever
 // else there is — none, when every one of them is.
 func perKeyBarred(p provider.Provider, model string, from provider.Protocol) (out, aside, left, barred []candidate) {
+	out, aside, left, barred = perKeyEvery(p, model, from)
+	out, aside = keepAtOnce(p.AtOnce(), out, aside)
+	return out, aside, left, barred
+}
+
+// keepAtOnce keeps, of a provider's accounts or keys routed over, the
+// first n in the user's own order (rank, the order the provider's page
+// shows and a drag sets), and holds the rest back as reserves: tried after
+// them, the way a key for another protocol is (aside), and marked so
+// (candidate.reserve). 01huadalang on Discord: ZCode bans the address
+// that three of its accounts are used from at once, while two are let
+// be, and In order alone still spread over all three under load (a full
+// lane gave way to the next account, laneMate, and every busy refusal
+// rested one). The ones kept are those not resting first, so an account
+// at the end of its quota hands its seat to the next in the list, and
+// gets it back once it is back; those resting fill seats only when fewer
+// than n are not. The user's order, not routing's, says who is first, so
+// the set stays the same request to request under In turn or By usage.
+// n of 0 keeps them all.
+func keepAtOnce(n int, out, aside []candidate) ([]candidate, []candidate) {
+	if n <= 0 || len(out)+len(aside) <= n {
+		return out, aside
+	}
+	all := append(slices.Clone(out), aside...)
+	byRank := make([]int, len(all))
+	for i := range byRank {
+		byRank[i] = i
+	}
+	slices.SortStableFunc(byRank, func(a, b int) int { return all[a].rank - all[b].rank })
+	resting := make([]bool, len(all))
+	for i, c := range all {
+		_, resting[i] = restingOf(c)
+	}
+	keep := make([]bool, len(all))
+	kept := 0
+	for _, rested := range []bool{false, true} {
+		for _, i := range byRank {
+			if kept < n && resting[i] == rested && !keep[i] {
+				keep[i], kept = true, kept+1
+			}
+		}
+	}
+	var reserves []candidate
+	for _, i := range byRank {
+		if !keep[i] {
+			c := all[i]
+			c.reserve = n
+			reserves = append(reserves, c)
+		}
+	}
+	keptOf := func(cs []candidate, from int) []candidate {
+		var o []candidate
+		for i, c := range cs {
+			if keep[from+i] {
+				o = append(o, c)
+			}
+		}
+		return o
+	}
+	return keptOf(out, 0), append(keptOf(aside, len(out)), reserves...)
+}
+
+// perKeyEvery is perKeyBarred with every account or key routed over, the
+// provider's AtOnce aside.
+func perKeyEvery(p provider.Provider, model string, from provider.Protocol) (out, aside, left, barred []candidate) {
 	if _, off := provider.ModelDisabled(p.ID, model); off || provider.DisabledUnknown() {
 		return nil, nil, nil, nil // the user disabled it (#1867): never planned, a fallback no more than the model asked
 	}
@@ -271,8 +352,11 @@ func perKeyBarred(p provider.Provider, model string, from provider.Protocol) (ou
 		})
 		// an account whose plan lacks the model (a Free one behind a Plus)
 		// would only answer 400; it is tried only when none lists it
+		// (by the vendor's own id: an account's list names its models by
+		// theirs, not by one the user lists one by)
+		own := p.OwnModelID(model)
 		for _, c := range all {
-			if c.p.Account.Lists(model) {
+			if c.p.Account.Lists(own) {
 				out = append(out, c)
 			} else {
 				left = append(left, c)
@@ -401,6 +485,13 @@ func (s *Server) candidates(p provider.Provider, model string, from provider.Pro
 // plan is candidates, and for the routing trace what each stood where it
 // did by, and those left out.
 func (s *Server) plan(p provider.Provider, model string, from provider.Protocol) ([]candidate, planned) {
+	return s.planPaused(p, model, from, nil)
+}
+
+// planPaused is plan, a routing group among the fallbacks (01huadalang on
+// Discord) less the models paused leaves out of it: its pause rules, as
+// a request to the group would have them; nil pauses none.
+func (s *Server) planPaused(p provider.Provider, model string, from provider.Protocol, paused func(provider.Group, []provider.Member) []provider.Member) ([]candidate, planned) {
 	var pl planned
 	add := func(q provider.Provider, m string, fallback bool) []candidate {
 		cs, aside, left, barred := perKeyBarred(q, m, from)
@@ -432,6 +523,25 @@ func (s *Server) plan(p provider.Provider, model string, from provider.Protocol)
 	}
 	seen := map[string]bool{p.ID + "/" + model: true}
 	for _, id := range p.Fallback {
+		if g, ms, ok := provider.FallbackGroup(id); ok {
+			// a routing group: its members as a request to it has them,
+			// in its order, routing and sink, less any model tried
+			// already (this provider's own, another fallback's); a
+			// member's fallbacks are not followed, so nothing leads back
+			if paused != nil {
+				ms = paused(g, ms)
+			}
+			ms = slices.DeleteFunc(ms, func(m provider.Member) bool {
+				k := m.Provider.ID + "/" + m.Model
+				if seen[k] {
+					return true
+				}
+				seen[k] = true
+				return false
+			})
+			out = append(out, planFallbackGroup(g, ms, from, &pl)...)
+			continue
+		}
 		fp, fm, ok := provider.ResolveRoute(id)
 		if !ok || seen[fp.ID+"/"+fm] {
 			continue
@@ -440,6 +550,36 @@ func (s *Server) plan(p provider.Provider, model string, from provider.Protocol)
 		out = append(out, add(fp, fm, true)...)
 	}
 	return restLast(out, pl)
+}
+
+// planFallbackGroup is planGroup for a routing group a provider falls back
+// to, its rows added to pl as fallbacks reached through g: the group's
+// keys and accounts in its own order, sunk by its own Sink, those set
+// aside after them.
+func planFallbackGroup(g provider.Group, ms []provider.Member, from provider.Protocol, pl *planned) []candidate {
+	if len(ms) == 0 {
+		return nil
+	}
+	at, leftAt, unlistedAt := len(pl.order), len(pl.left), len(pl.unlistedW)
+	var asides []candidate
+	var wAsides []Weighed
+	out := planLevel(g, ms, 0, from, pl, &asides, &wAsides)
+	if sinks(g.Sink, g.Routing) {
+		var order []Weighed
+		out, order = sinkPlanned(out, pl.order[at:])
+		pl.order = append(pl.order[:at], order...)
+	}
+	out, pl.order = append(out, asides...), append(pl.order, wAsides...)
+	via := func(ws []Weighed) {
+		for i := range ws {
+			ws[i].Fallback = true
+			ws[i].Via = append([]string{g.ID}, ws[i].Via...)
+		}
+	}
+	via(pl.order[at:])
+	via(pl.left[leftAt:])
+	via(pl.unlistedW[unlistedAt:])
+	return out
 }
 
 // planGroup is plan for a routing group: every member's keys or accounts
@@ -466,7 +606,23 @@ func (s *Server) planGroup(g provider.Group, ms []provider.Member, from provider
 	if len(out) == 0 {
 		return nil, pl
 	}
+	placed(ms, out)
+	placed(ms, pl.unlisted)
 	return restLast(out, pl)
+}
+
+// placed sets each of cs's place: where its member is in ms, the group's
+// models in the order its list has them, a group in the group by its first.
+func placed(ms []provider.Member, cs []candidate) {
+	at := map[string]int{}
+	for _, m := range ms {
+		if len(m.Path) > 0 && at[m.Path[0]] == 0 {
+			at[m.Path[0]] = len(at) + 1
+		}
+	}
+	for i := range cs {
+		cs[i].place = at[cs[i].member]
+	}
 }
 
 // innerFirstToken is the FirstToken of the innermost group m is in
@@ -502,9 +658,12 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 		// the same model at another effort is another member's
 		for _, l := range [][]candidate{cs, aside, left, barred} {
 			for i := range l {
-				l[i].effort, l[i].fast = m.Effort, m.Fast
+				l[i].effort, l[i].levels, l[i].fast = m.Effort, m.Levels, m.Fast
 				l[i].firstToken = innerFirstToken(m)
 				l[i].patience = innerPatience(m)
+				if len(m.Path) > 0 {
+					l[i].member = m.Path[0]
+				}
 			}
 		}
 		pl.left = append(pl.left, barredOf(barred, m.Provider, false, from, m.Groups())...)
@@ -922,26 +1081,37 @@ func asideOf(cs []candidate, q provider.Provider, fallback bool, from provider.P
 	return out
 }
 
-// restLast moves those resting after a recent failure behind the rest.
+// restLast moves those resting after a recent failure behind the rest,
+// and a Codex account set to spend its credits last that has gone onto
+// them (creditsLast) behind both, those in their own order.
 func restLast(out []candidate, pl planned) ([]candidate, planned) {
 	if len(out) == 1 {
 		if r, ok := restingOf(out[0]); ok {
 			pl.order[0].Rest = &r // tried all the same: there is no other
 		}
+		pl.order[0].CreditsLast = out[0].creditsLast(time.Now())
 		return out, pl
 	}
-	var ready, resting []candidate
-	var wReady, wResting []Weighed
+	now := time.Now()
+	var ready, resting, last []candidate
+	var wReady, wResting, wLast []Weighed
 	for i, c := range out {
-		if r, ok := restingOf(c); ok {
+		r, isResting := restingOf(c)
+		if isResting {
 			pl.order[i].Rest = &r
+		}
+		switch {
+		case c.creditsLast(now):
+			pl.order[i].CreditsLast = true
+			last, wLast = append(last, c), append(wLast, pl.order[i])
+		case isResting:
 			resting, wResting = append(resting, c), append(wResting, pl.order[i])
-		} else {
+		default:
 			ready, wReady = append(ready, c), append(wReady, pl.order[i])
 		}
 	}
-	pl.order = append(wReady, wResting...)
-	return append(ready, resting...), pl
+	pl.order = append(append(wReady, wResting...), wLast...)
+	return append(append(ready, resting...), last...), pl
 }
 
 // probeOne keeps, of the candidates resting after a failure, only the one
@@ -1016,14 +1186,18 @@ func restingOf(c candidate) (Rest, bool) {
 // exhausted" for the moment it switched upstreams, and every request,
 // the agent's retry first, was answered from its 15-minute rest. A
 // subscription account isn't held so: its resets may be spent for it
-// (autoReset), and its windows are read again as it is planned.
+// (autoReset), and its windows are read again as it is planned. Nor is a
+// model of another computer's magpie (Rest.there): that magpie holds its
+// own rests, and the user may have changed what it serves since
+// (zaidu259434 on X: a group there moved off a spent vendor, and its
+// refusal was still given here until the time it named).
 func quotaHeld(cs []candidate) (Rest, time.Time, bool) {
 	var first Rest
 	var back time.Time
 	now := time.Now()
 	for i, c := range cs {
 		r, ok := restingOf(c)
-		if !ok || c.p.Account != nil || r.Why != failQuota && r.Why != failCredit || !quotaStatus(r.Status) || r.said == "" {
+		if !ok || c.p.Account != nil || r.there || r.Why != failQuota && r.Why != failCredit || !quotaStatus(r.Status) || r.said == "" {
 			return Rest{}, time.Time{}, false
 		}
 		at := r.asksAt(now)
@@ -1172,7 +1346,7 @@ func restOf(id string) (Rest, bool) {
 
 // quotaWords are how vendors say "out of quota" or "slow down" when their
 // status code doesn't: some answer 400 or 403 with it.
-var quotaWords = regexp.MustCompile(`(?i)quota|insufficient|balance|credit|billing|out of budget|budget (exceeded|exhausted)|exceeded|rate.?limit|usage.?limit|limit.?reached|hit your .*limit|limit.{0,24}resets|too many requests|overloaded|余额|额度|欠费|限流|频率|套餐|用量|上限`)
+var quotaWords = regexp.MustCompile(`(?i)quota|insufficient|balance|credit|billing|out of budget|budget (exceeded|exhausted)|exceeded|rate.?limit|usage.?limit|limit.?reached|hit your .*limit|limit.{0,24}resets|too many requests|overloaded|余额|额度|欠费|限流|频率|频繁|速率|套餐|用量|上限`)
 
 // quotaSaid is whether an error's words, with no status to go by, say
 // out of quota or slow down: quotaWords, unless they say the conversation
@@ -1184,7 +1358,9 @@ func quotaSaid(msg string) bool {
 
 // unservedWords are how a vendor says the model isn't one it serves this
 // key, or this way — words another provider, or key, may not answer with.
-var unservedWords = regexp.MustCompile(`(?i)model.{0,80}(not (supported|accessible|available|found|enabled|allowed)|unsupported|does ?n[o']t exist|unknown|invalid)|(no such|unknown|invalid|unsupported) model|model_not_found|模型.{0,12}(不存在|不支持|无权|未开通)`)
+// provider.ModelUnserved owns them: a plugin's 401 that says them doesn't
+// mark the account's sign-in either.
+var unservedWords = provider.ModelUnserved
 
 // modelRefused says the vendor turned the request away over its model
 // alone — not one this key's plan, or this key, may use: SenseNova's 403
@@ -1319,11 +1495,13 @@ var unsaidWords = regexp.MustCompile(`(?i)(^|"|\\"|: )invalid request error trac
 // member has tried every API it has a URL for (forwardTranslated), and
 // another member, on another API or another vendor, may serve it (#2670:
 // a relay with a Chat URL alone, refusing tools with reasoning there).
+// One that also says the account is out of quota or credit (quotaWords,
+// creditWords: "请充值") is that, and rests it (#4095).
 func shapeRefused(status int, body []byte) bool {
 	// the words are matched decoded, too (#1669)
 	body = wordsOf(body)
 	return (status == 400 || status == 422) && (shapeWords.Match(body) || unsaidWords.Match(body) || customToolRefusal.Match(body) || wrongEndpoint(status, body)) &&
-		!quotaWords.Match(body) && !unservedWords.Match(body) && !refusedWords.Match(body)
+		!quotaWords.Match(body) && !creditWords.Match(body) && !unservedWords.Match(body) && !refusedWords.Match(body)
 }
 
 // regionWords are how a vendor says it doesn't serve where the request
@@ -1417,6 +1595,7 @@ func elsewhere(left []candidate, c candidate) []candidate {
 // that failed this way: the vendor was busy, out of quota or failing, or
 // this key or provider can't serve it — not the request itself at fault.
 func retryable(status int, body []byte) bool {
+	raw := body
 	// the words are matched decoded, too (#1669)
 	body = wordsOf(body)
 	switch {
@@ -1432,6 +1611,14 @@ func retryable(status int, body []byte) bool {
 	case status >= 400 && provider.EdgeBlocked(body):
 		// the vendor's firewall blocked this address (Alibaba Cloud's 405
 		// in front of zcode.z.ai): another provider goes another way
+		return true
+	case status >= 400 && status < 500 && failure(status, raw) == failCredit:
+		// out of credit, as failure reads it, whatever the status: another
+		// account may have a balance. SuperMagic's 400 "您的可用积分已不足…
+		// 通过「充值」通道补充积分" read as credit, but no word of
+		// quotaWords' is in it, so a group never asked the account with
+		// 6,467 points and the empty one was never rested (#4095,
+		// mycf_711)
 		return true
 	case status == 400, status == 422:
 		return quotaWords.Match(body) || unservedWords.Match(body) || refusedWords.Match(body) || shapeWords.Match(body) || unsaidWords.Match(body) || regionWords.Match(body) || wrongEndpoint(status, body)
@@ -1555,10 +1742,38 @@ func passing(status int, header http.Header, body []byte, again int) (time.Durat
 		return wait, again < lastRetries
 	case status == 429:
 		// a relay's 429 often says nothing of when (#503: "负载已饱和，请稍
-		// 后再试"); a plan used up or no money left won't clear in seconds
-		return wait, again < rateRetries && failure(status, body) == failRate && !creditWords.Match(wordsOf(body))
+		// 后再试"); a plan used up or no money left won't clear in seconds,
+		// nor an account's token wall (walled)
+		return wait, again < rateRetries && failure(status, body) == failRate && !creditWords.Match(wordsOf(body)) && !walled(body)
 	}
 	return 0, false
+}
+
+// wallCodes are the error codes a vendor gives a 429 for an account's
+// own token throughput used up, a bucket that refills slowly over minutes
+// (plugins#512, cycocyco): SenseTime Raccoon's user_model_rate_limited,
+// "您的模型请求频率超限，请稍后重试", with no Retry-After. It reads as a
+// rate limit and rests as one, a minute and longer each time it comes
+// back (rateRest), but no moment clears it: the same-one retries and a
+// patience's rounds sent the whole request again eight times in 38s, each
+// one drawing on the bucket it waited for. The next account is asked, or
+// the agent has the error at once.
+var wallCodes = map[string]bool{"user_model_rate_limited": true}
+
+// walled says whether body is a refusal whose error.code is one of
+// wallCodes: the code where the vendor puts it, not the words anywhere in
+// the body (a prompt or a message quoting it).
+func walled(body []byte) bool {
+	var e struct {
+		Error struct {
+			Code json.RawMessage `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &e) != nil {
+		return false
+	}
+	var code string
+	return json.Unmarshal(e.Error.Code, &code) == nil && wallCodes[code]
 }
 
 // withRoom is, of the candidates left, those another member than c's may
@@ -1769,7 +1984,9 @@ type holdWriter struct {
 	// refusal may still end: held longer (holdThinking)
 	thinking bool
 	// thinkingShown: the model's vendor never refuses after reasoning
-	// (refusesAfterThinking), so its reasoning goes through as it comes
+	// (refusesAfterThinking), or the member has gone on from its thinking
+	// to an answer enough times running (holdsThinking), so its reasoning
+	// goes through as it comes
 	thinkingShown bool
 	// thoughtThrough: the try went through on its reasoning alone
 	// (thinkingShown) while the request could still have asked again, so
@@ -1845,6 +2062,16 @@ type holdWriter struct {
 	// before it was complete" and its 429 halfway went to the summary
 	// as the only answer, the next account never asked
 	wantWhole bool
+
+	// upstreamKeys are the headers of the vendor's reply heardUpstream put
+	// in header (#4145)
+	upstreamKeys []string
+
+	// over, when another candidate stands behind the try, reads what
+	// passes before its answer begins for a refusal to hand to the next
+	// one in the same stream (refusalHandover); handedOver says it was
+	over       *refusalHandover
+	handedOver bool
 }
 
 // onLoop sets what is told of a loop before it ends the reply (reask),
@@ -1939,6 +2166,9 @@ func (h *holdWriter) Write(b []byte) (int, error) {
 	if h.looped != "" || h.relooped {
 		return 0, errLooped
 	}
+	if h.handedOver {
+		return 0, errHandedOver
+	}
 	if h.status == 0 {
 		h.writeHeader(http.StatusOK)
 	}
@@ -1973,6 +2203,14 @@ func (h *holdWriter) Write(b []byte) (int, error) {
 			}
 		}
 	}
+	if h.overActive() {
+		// nothing said yet: a refusal is handed to the next candidate
+		h.passOver(b)
+		if h.handedOver {
+			return 0, errHandedOver
+		}
+		return len(b), nil
+	}
 	if h.first.first != 0 || h.passing {
 		h.refusalAfter(b)
 	}
@@ -1983,6 +2221,9 @@ func (h *holdWriter) Write(b []byte) (int, error) {
 	n, err := h.held.Write(b)
 	if h.stream && h.failure == 0 {
 		h.scan()
+	}
+	if h.handedOver {
+		return 0, errHandedOver
 	}
 	return n, err
 }
@@ -2157,10 +2398,15 @@ func (h *holdWriter) keptQuiet() bool {
 
 // refusesAfterThinking tells whether a model's vendor may end a reply that
 // has only reasoned with its safety filter's refusal: Claude's stop_reason
-// refusal, OpenAI's content_filter or bio_policy, Gemini's SAFETY (#248).
-// Anybody else's reasoning — GLM's, DeepSeek's, Kimi's… — is shown as it
-// comes: held, GLM on a ZCode account through a group showed Claude Code
-// its thinking only once the text began, all at once (悠悠哥 on Discord).
+// refusal, OpenAI's content_filter or bio_policy, Gemini's SAFETY (#248),
+// and DeepSeek's content_filter: deepseek-v4.1-flash on WorkBuddy reasoned
+// for 5s and then ended content_filter with nothing said (the plugin takes
+// out the filter's canned line), and with its reasoning let through the
+// group's next member was never asked and DeepSeek Harness failed "The
+// model refused to complete the request" (itspig, plugins #540).
+// Anybody else's reasoning — GLM's, Kimi's… — is shown as it comes: held,
+// GLM on a ZCode account through a group showed Claude Code its thinking
+// only once the text began, all at once (悠悠哥 on Discord).
 func refusesAfterThinking(model string) bool {
 	if modelFamily(model) != "" {
 		return true
@@ -2169,7 +2415,76 @@ func refusesAfterThinking(model string) bool {
 	if i := strings.LastIndex(m, "/"); i >= 0 {
 		m = m[i+1:]
 	}
-	return strings.HasPrefix(m, "gemini")
+	return strings.HasPrefix(m, "gemini") || deepseekAfterThinking(m)
+}
+
+// deepseekAfterThinking tells whether the model is DeepSeek's, the one
+// vendor whose reasoning the refusal hold lets go once the member has
+// gone on from its thinking to an answer enough times running
+// (holdsThinking): Claude's, GPT's and Gemini's is held whatever the
+// member has answered lately (#248).
+func deepseekAfterThinking(model string) bool {
+	m := strings.ToLower(model)
+	if i := strings.LastIndex(m, "/"); i >= 0 {
+		m = m[i+1:]
+	}
+	return strings.HasPrefix(m, "deepseek")
+}
+
+// thoughtCleanMost is how many thinking replies in a row that went on to
+// an answer trust a DeepSeek member with its reasoning as it comes
+// (holdsThinking): its filter refuses after thinking hardly ever (#4512:
+// one content_filter in 33,245 group requests over 7 days), and held,
+// every one of those requests kept the agent waiting its whole thinking
+// out. A refusal of its own takes the trust back (thoughtRefused).
+const thoughtCleanMost = 3
+
+// holdsThinking tells whether the try's reasoning is held back for a
+// refusal after it while another candidate could answer. DeepSeek's is,
+// until the member's thinking has gone on to an answer thoughtCleanMost
+// times running; past that it goes through as it comes, GLM's way.
+// Claude's, GPT's and Gemini's is held whatever the member answered
+// lately (#248).
+func (s *Server) holdsThinking(c candidate) bool {
+	if !refusesAfterThinking(c.model) {
+		return false
+	}
+	if !deepseekAfterThinking(c.model) {
+		return true
+	}
+	s.thoughtMu.Lock()
+	defer s.thoughtMu.Unlock()
+	return s.thoughtClean[c.p.ID+"/"+c.model] < thoughtCleanMost
+}
+
+// thoughtAnswered counts a thinking reply that went on to an answer, for
+// holdsThinking's trust to run out on.
+func (s *Server) thoughtAnswered(c candidate) {
+	if !deepseekAfterThinking(c.model) {
+		return
+	}
+	s.thoughtMu.Lock()
+	defer s.thoughtMu.Unlock()
+	if s.thoughtClean == nil {
+		s.thoughtClean = make(map[string]int)
+	}
+	s.thoughtClean[c.p.ID+"/"+c.model]++
+}
+
+// thoughtRefused takes the trust back: the member's filter refused a
+// reply after (or beside) its thinking (plugins #540), so its reasoning
+// is held again for the next requests, until it has answered
+// thoughtCleanMost times running.
+func (s *Server) thoughtRefused(c candidate) {
+	if !deepseekAfterThinking(c.model) {
+		return
+	}
+	s.thoughtMu.Lock()
+	defer s.thoughtMu.Unlock()
+	if s.thoughtClean == nil {
+		s.thoughtClean = make(map[string]int)
+	}
+	s.thoughtClean[c.p.ID+"/"+c.model] = 0
 }
 
 // scan reads the held stream's events so far: an error before any content
@@ -2258,12 +2573,23 @@ func (h *holdWriter) scan() {
 	}
 }
 
-// keepHeldAfter is how long a stream held for its reasoning waits before
-// its agent is first kept alive, as long as a stream with nothing in it
-// is held where its agent can't be (holdLongest); a refusal after it still
-// goes to another account,
-// whose stream follows the comments in the same response.
-var keepHeldAfter = holdLongest
+// keepHeldAfter is how long a held stream waits before its agent is first
+// kept alive (keepAlive): the stream's 200, then a comment every
+// keepHeldEvery. A refusal after it still goes to another account, whose
+// stream follows the comments in the same response. It was holdLongest,
+// 15s, and a proxy between the agent and magpie that hangs up on a
+// request with nothing back for about 10s ended every turn whose vendor
+// took longer to its first event: Codex on Windows sends its requests for
+// 127.0.0.1 through the system proxy a Clash-style app sets, "127.*" in
+// its bypass list notwithstanding (codexProxyFor), and they ended 499
+// (mrten_95615 on Discord). A failure before it is still a status, its
+// Retry-After with it.
+var keepHeldAfter = 3 * time.Second
+
+// keepHeldEvery is the longest a held stream's agent goes without a
+// comment once it has its 200, under keepaliveEvery: the same proxy waits
+// for bytes, not for events.
+var keepHeldEvery = 5 * time.Second
 
 // keptAlive is what a request's held streams have sent its agent ahead of
 // a reply: the stream's headers and SSE comments, nothing of the reply.
@@ -2278,6 +2604,8 @@ type keptAlive struct {
 	// it asked; streams, whether it asked for a stream
 	told    time.Time
 	streams bool
+	// codex, whether Codex sent the request (fromCodex)
+	codex bool
 	// Only opted-in Claude cache reporting can defer initial keepalives.
 	// Selection releases it before process startup; expiry keeps the stream alive.
 	cacheReportUntil time.Time
@@ -2294,6 +2622,18 @@ type keptAlive struct {
 // itself, so a second held try, or a group's pause (#1418), went past it.
 var agentQuietMost = 4 * time.Minute
 
+// compactsInStream says a refusal of a request too large to be taken —
+// past the vendor's byte cap (413) or the model's window (tooLong) — goes
+// to the agent in its stream though none was sent yet: Codex compacts on
+// response.failed context_length_exceeded alone. Told by status, it takes
+// a 413 for an unexpected status and a 400 context_length_exceeded for an
+// invalid request, and either ends the turn with nothing compacted, a
+// compaction refused the same way failing outright (codex-rs codex-api
+// api_bridge.rs). Another client keeps the status.
+func (a *keptAlive) compactsInStream(status int, msg string) bool {
+	return a.codex && a.streams && a.proto == provider.Responses && (status == http.StatusRequestEntityTooLarge || tooLong(status, msg))
+}
+
 // tooQuiet says whether a Responses agent that has had no event of its
 // reply would go agentQuietMost without one after d more.
 func (a *keptAlive) tooQuiet(d time.Duration) bool {
@@ -2301,7 +2641,7 @@ func (a *keptAlive) tooQuiet(d time.Duration) bool {
 }
 
 // keepAlive tells the agent of a stream held past keepHeldAfter for its
-// reasoning that it goes on, every keepaliveEvery: held for up to
+// reasoning that it goes on, every keepHeldEvery: held for up to
 // holdThinking (4 minutes), the agent heard nothing at all, and Alma's
 // idle timeout for a reasoning model, 240s, ended the turn first (#751). A
 // comment is no event in any protocol, so another account may still answer
@@ -2310,7 +2650,7 @@ func (h *holdWriter) keepAlive() {
 	a := h.alive
 	// a Gemini stream has none, as geminiEncoder.keepalive: agy fails on
 	// the comment ("invalid stream chunk: : keepalive", #934)
-	if a == nil || a.proto == provider.Gemini || time.Since(a.at) < keepaliveEvery {
+	if a == nil || a.proto == provider.Gemini || time.Since(a.at) < min(keepaliveEvery, keepHeldEvery) {
 		return
 	}
 	if !a.sent {
@@ -2414,11 +2754,21 @@ func mayRefuse(ev []byte) bool {
 var refusalSays = [][]byte{
 	[]byte(`error`), []byte(`failed`), []byte(`refusal`), []byte(`filter`),
 	[]byte(`incomplete`), []byte(`finishReason`), []byte(`blockReason`),
+	[]byte(`"sensitive"`), // Zhipu's finish_reason
 }
 
 // flow lets a held stream through, and what follows it.
 func (h *holdWriter) flow() {
+	if h.handedOver {
+		return
+	}
 	h.pass()
+	if h.overActive() {
+		held := bytes.Clone(h.held.Bytes())
+		h.held.Reset()
+		h.passOver(held)
+		return
+	}
 	h.sent(h.held.Bytes())
 	h.w.Write(h.held.Bytes())
 	h.held.Reset()
@@ -2526,6 +2876,13 @@ func (h *holdWriter) thoughtOnly() bool {
 	return h.thoughtThrough
 }
 
+// sawThinking tells whether the try reasoned at all, held or as it came.
+func (h *holdWriter) sawThinking() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.thinking || h.thoughtThrough
+}
+
 // handBack sends a refusal held with nothing said as the vendor's own
 // reply, a 200 that ends with its stop reason, and says whether it could:
 // not a refusal said as an error status or event, which is no reply.
@@ -2582,7 +2939,7 @@ var watchEvery = time.Second
 // slot of its key's or account's (MaxConcurrency) or for room in its
 // minute (MaxRPM), before anything is sent to the vendor: past
 // keepHeldAfter it is sent the stream's 200 and SSE comments
-// (keepAlive), every keepaliveEvery for as long as the wait lasts, as a
+// (keepAlive), every keepHeldEvery for as long as the wait lasts, as a
 // try's held stream is. A wait of up to 2 minutes for the minute, or
 // QueueWait's for a slot, sent the agent nothing at all, which an agent's
 // or a proxy's timeout for its headers ended first (coeo91 on Discord:
@@ -2819,18 +3176,36 @@ const refusedStatus = http.StatusBadRequest
 
 // filterReasons are how a vendor says its safety filter stopped the reply:
 // Anthropic's stop_reason, OpenAI's finish_reason and incomplete reason,
-// an OpenAI or Azure error's code, and Gemini's finishReason and
-// blockReason.
+// an OpenAI or Azure error's code, Factory's error code, and Gemini's
+// finishReason and blockReason.
 var filterReasons = map[string]string{
 	"refusal":                  "refusal",
 	"content_filter":           "content_filter",
 	"content_policy_violation": "content_filter",
-	"SAFETY":                   "safety",
-	"PROHIBITED_CONTENT":       "safety",
-	"BLOCKLIST":                "safety",
-	"SPII":                     "safety",
-	"IMAGE_SAFETY":             "safety",
+	// Factory's usage policy check, a 403 whose code droid 0.245.0 tells
+	// apart from an account's 403 the same way (the Factory plugin keeps
+	// the code on the error it hands magpie): handed on as its 403, the
+	// agent took it for a failed sign-in (sweanng on Discord, ZCode:
+	// "Provider authentication failed", reason=auth_failed status=403)
+	"content_policy_rejected": "content_policy_rejected",
+	// Zhipu's finish_reason when its filter stops GLM's reply, and
+	// DashScope's error code when Alibaba's stops Qwen's: both after the
+	// reasoning went to the agent, which had it end there (yhwangl on X)
+	"sensitive":              "sensitive",
+	"data_inspection_failed": "data_inspection_failed",
+	"DataInspectionFailed":   "data_inspection_failed",
+	"SAFETY":                 "safety",
+	"PROHIBITED_CONTENT":     "safety",
+	"BLOCKLIST":              "safety",
+	"SPII":                   "safety",
+	"IMAGE_SAFETY":           "safety",
 }
+
+// finishFailed is what a 200 stream the vendor ends with finish_reason
+// "error" (#2471) says of itself, in the failure the hold keeps: the turn
+// failed, as the word says, and the group's next member answers it, while
+// taken for content it reached the agent and the try stood as a success.
+const finishFailed = `the reply ended with finish_reason "error"`
 
 // refusedNote is what a refusal is noted as: the vendor's own reason.
 func refusedNote(reason string) string {
@@ -3128,6 +3503,14 @@ func streamEvent(ev []byte) (kind, status int, msg string) {
 				if r, ok := filterReasons[*c.FinishReason]; ok {
 					return refusal(r)
 				}
+				if *c.FinishReason == "error" {
+					// WorkBuddy's and a DeepSeek harness's word for a turn
+					// it failed, not finished (#2471): the failure an error
+					// event is, held for the group's next candidate, where
+					// taken for content it went to the agent and the try
+					// stood as a success
+					return eventError, streamStatus(finishFailed), finishFailed
+				}
 				return eventContent, 0, ""
 			}
 		}
@@ -3223,6 +3606,12 @@ func errorCode(raw json.RawMessage) string {
 // risk"), cyber_policy and the like (#248).
 var policyCode = regexp.MustCompile(`^[a-z]+_policy$`)
 
+// sensitiveCode is how Volcengine Ark's errors say its filter refused the
+// input or the reply: InputTextSensitiveContentDetected,
+// OutputTextSensitiveContentDetected, SensitiveContentDetected and the
+// image and video kinds of them.
+var sensitiveCode = regexp.MustCompile(`SensitiveContentDetected$`)
+
 // flaggedWords are how OpenAI's invalid_prompt says the prompt was held to
 // its usage policy, rather than malformed.
 var flaggedWords = regexp.MustCompile(`(?i)flagged|usage polic`)
@@ -3257,8 +3646,11 @@ func policyRefusal(raw []byte) (string, bool) {
 	}
 	note := func(reason string) (string, bool) {
 		if msg = strings.TrimSpace(msg); msg != "" {
-			if len(msg) > 300 {
-				msg = msg[:300] + "…"
+			// long enough for the vendor's own advice after its words:
+			// Factory's "start a new session…" and OpenAI's Daybreak
+			// link were cut off at 300
+			if len(msg) > 1000 {
+				msg = msg[:1000] + "…"
 			}
 			return refusedNote(reason) + " — " + msg, true
 		}
@@ -3267,8 +3659,11 @@ func policyRefusal(raw []byte) (string, bool) {
 	switch r, ok := filterReasons[c]; {
 	case ok:
 		return note(r)
-	case policyCode.MatchString(c):
+	case policyCode.MatchString(c), sensitiveCode.MatchString(c):
 		return note(c)
+	case c == "1301" && strings.Contains(msg, "敏感"):
+		// Zhipu's: "系统检测到输入或生成内容可能包含不安全或敏感内容"
+		return note("sensitive")
 	case c == "invalid_prompt" && flaggedWords.MatchString(msg):
 		return note(c)
 	case strings.TrimSpace(msg) == highRiskRefusal:

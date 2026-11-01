@@ -3,7 +3,6 @@ package guard
 import (
 	"fmt"
 	"math"
-	"runtime"
 	"slices"
 	"sync"
 )
@@ -251,11 +250,8 @@ func (m *qmat) matmul(x []float32, rows, t int) []float32 {
 	return out
 }
 
-// threads is how many goroutines the model reads with: a long text's
-// windows that many at once, or one window's matmuls split over them.
-var threads = max(1, runtime.GOMAXPROCS(0)-1)
-
-// parallel calls f over [0, n) in t parts at once.
+// parallel calls f over [0, n) in t parts at once; a panic in one is
+// panicked again here once all have ended.
 func parallel(t, n int, f func(a, b int)) {
 	t = min(t, n)
 	if t <= 1 {
@@ -263,15 +259,18 @@ func parallel(t, n int, f func(a, b int)) {
 		return
 	}
 	var wg sync.WaitGroup
+	var c carried
 	step := (n + t - 1) / t
 	for a := 0; a < n; a += step {
 		wg.Add(1)
 		go func(a, b int) {
 			defer wg.Done()
+			defer c.catch()
 			f(a, b)
 		}(a, min(n, a+step))
 	}
 	wg.Wait()
+	c.rethrow()
 }
 
 // layerNorm sets each row of x to its layer norm (epsilon 1e-12).
